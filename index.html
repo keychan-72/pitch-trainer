@@ -26,6 +26,12 @@
     font-family: inherit;
   }
   .note-btn.active { background: #6C5CE7; color: #fff; box-shadow: 0 4px 12px rgba(108,92,231,0.35); }
+  .guide-btn {
+    margin-top: 4px; padding: 8px 18px; border-radius: 999px; border: 2px solid #6C5CE7;
+    background: #fff; color: #6C5CE7; font-weight: 700; font-size: 13px; cursor: pointer;
+    font-family: inherit; transition: all 0.15s ease;
+  }
+  .guide-btn:active { transform: scale(0.96); background: #F0EDFF; }
   .character {
     width: 200px; height: 200px; border-radius: 50%; background: #E8E4F5;
     display: flex; align-items: center; justify-content: center;
@@ -35,7 +41,7 @@
   .meter-wrap { width: 280px; margin-top: 24px; }
   .meter-bar {
     position: relative; height: 16px; border-radius: 999px;
-    background: linear-gradient(90deg, #FF7A7A 0%, #FFC94D 30%, #4ADE80 46%, #4ADE80 54%, #FFC94D 70%, #FF7A7A 100%);
+    background: linear-gradient(90deg, #4E9EDE 0%, #7FC4E8 30%, #4ADE80 46%, #4ADE80 54%, #FFC15E 70%, #FF9F4E 100%);
   }
   .meter-dot { position: absolute; top: -6px; width: 6px; height: 28px; border-radius: 3px; background: #2D2A4A; transition: left 0.08s linear; }
   .meter-labels { display: flex; justify-content: space-between; margin-top: 6px; font-size: 11px; color: #B0AAC9; }
@@ -60,6 +66,7 @@
   <div class="subtitle">目でみて、声のズレをつかもう</div>
 
   <div class="notes" id="notes"></div>
+  <button class="guide-btn" id="guideBtn">🔊 お手本の音を聞く</button>
 
   <div id="charWrap"><div class="character" id="character">
     <svg width="120" height="120" viewBox="0 0 120 120" id="face">
@@ -110,6 +117,8 @@ let targetIdx = 0;
 let listening = false;
 let audioCtx, analyser, stream, buf, rafId;
 let streakStart = null, best = 0;
+let smoothedCents = 0;
+let guideCtx;
 
 const notesEl = document.getElementById('notes');
 NOTES.forEach((n, i) => {
@@ -118,6 +127,7 @@ NOTES.forEach((n, i) => {
   b.textContent = n.label;
   b.onclick = () => {
     targetIdx = i;
+    smoothedCents = 0;
     document.querySelectorAll('.note-btn').forEach(el => el.classList.remove('active'));
     b.classList.add('active');
   };
@@ -157,7 +167,11 @@ function updateFace(cents, active) {
   const inTune = active && Math.abs(cents) <= 15;
   const close = active && Math.abs(cents) <= 40;
   let bg = '#E8E4F5';
-  if (active) bg = inTune ? '#4ADE80' : (close ? '#FFC94D' : '#FF7A7A');
+  if (active) {
+    if (inTune) bg = '#4ADE80';
+    else if (cents > 0) bg = close ? '#FFC15E' : '#FF9F4E'; // 高い→オレンジ系
+    else bg = close ? '#7FC4E8' : '#4E9EDE'; // 低い→青系
+  }
   character.style.background = bg;
   character.style.transform = inTune ? 'scale(1.06)' : 'scale(1)';
   const clamped = Math.max(-50, Math.min(50, cents||0));
@@ -182,7 +196,10 @@ function tick() {
   const bestNum = document.getElementById('bestNum');
 
   if (freq !== -1 && freq > 60 && freq < 1200) {
-    const cents = 1200 * Math.log2(freq/targetFreq);
+    const rawCents = 1200 * Math.log2(freq/targetFreq);
+    // 動きが速すぎないように、直前の値との平滑化(スムージング)をかける
+    smoothedCents += (rawCents - smoothedCents) * 0.18;
+    const cents = smoothedCents;
     updateFace(cents, true);
     const barPos = Math.max(-50, Math.min(50, cents));
     dot.style.left = (((barPos+50)/100)*100) + '%';
@@ -208,9 +225,26 @@ function tick() {
 const startBtn = document.getElementById('startBtn');
 const errorEl = document.getElementById('error');
 const hintEl = document.getElementById('hint');
+const guideBtn = document.getElementById('guideBtn');
 
-// デバッグ用: スクリプトが正しく読み込まれたことを画面に表示
-hintEl.textContent = '(スクリプト読み込みOK) ' + hintEl.textContent;
+// お手本の音(サイン波)を鳴らす
+function playGuideTone() {
+  if (!guideCtx) guideCtx = new (window.AudioContext || window.webkitAudioContext)();
+  const freq = freqOf(NOTES[targetIdx].semitone);
+  const osc = guideCtx.createOscillator();
+  const gain = guideCtx.createGain();
+  osc.type = 'sine';
+  osc.frequency.value = freq;
+  const now = guideCtx.currentTime;
+  gain.gain.setValueAtTime(0.0001, now);
+  gain.gain.exponentialRampToValueAtTime(0.28, now + 0.06);
+  gain.gain.setValueAtTime(0.28, now + 0.9);
+  gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+  osc.connect(gain).connect(guideCtx.destination);
+  osc.start(now);
+  osc.stop(now + 1.15);
+}
+guideBtn.onclick = playGuideTone;
 
 startBtn.onclick = async () => {
   if (listening) {
